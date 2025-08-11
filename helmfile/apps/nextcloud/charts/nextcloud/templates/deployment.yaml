@@ -81,15 +81,16 @@ spec:
             - |
               #!/bin/bash
 
-              echo "Start provisioning";
-              cp /usr/local/etc/php/php.ini-production /shared/php.ini;
-              mkdir -p /shared/conf.d;
-              echo "Setup default PHP config";
+              echo "Start provisioning"
+              cp /usr/local/etc/php/php.ini-production /shared/php.ini
+              mkdir -p /shared/conf.d
+              echo "Setup default PHP config"
               cp /usr/local/etc/php/conf.d/*.ini /shared/conf.d/
               if [ -d /php-configs ]; then
-              echo "Setup custom PHP config";
-              cp /php-configs/* /shared/conf.d/
+                echo "Setup custom PHP config"
+                cp /php-configs/* /shared/conf.d/
               fi
+              echo "Provisioning completed"
           volumeMounts:
             - name: empty-dir
               mountPath: /shared
@@ -110,29 +111,37 @@ spec:
             - |
               #!/bin/bash
 
+              # Cleanup function for error handling
+              cleanup() {
+                rm -rf /tmp/user_oidc /tmp/user_oidc.tar.gz 2>/dev/null || true
+              }
+              trap cleanup EXIT
+
               if [ -d "/custom_apps/user_oidc" ] && [ -f "/custom_apps/user_oidc/appinfo/info.xml" ]; then
                 echo "user_oidc already installed, skipping"
                 exit 0
               fi
-              echo "Starting user_oidc installation";
-              echo "Downloading user_oidc pre-built release ...";
+              
+              echo "Starting user_oidc installation"
+              echo "Downloading user_oidc pre-built release..."
               curl -L -o /tmp/user_oidc.tar.gz "https://github.com/nextcloud-releases/user_oidc/releases/download/v7.3.1/user_oidc-v7.3.1.tar.gz"
-              echo "Download completed";
-              echo "Unpacking user_oidc ...";
+              
+              echo "Download completed"
+              echo "Unpacking user_oidc..."
               tar -xzf /tmp/user_oidc.tar.gz -C /tmp/
               cp -r --preserve=mode /tmp/user_oidc /custom_apps/
-              echo "Cleanup ...";
-              rm -rf /tmp/user_oidc
-              rm /tmp/user_oidc.tar.gz
-              echo "Verifying installation ...";
+              
+              echo "Verifying installation..."
               if [ -f "/custom_apps/user_oidc/vendor/autoload.php" ]; then
                 echo "✓ Vendor dependencies found"
               else
                 echo "✗ Warning: Vendor dependencies missing!"
                 exit 1
               fi
+              
               if [ -f "/custom_apps/user_oidc/appinfo/info.xml" ]; then
                 echo "✓ App info found"
+                echo "user_oidc installation completed successfully"
               else
                 echo "✗ Error: App info missing!"
                 exit 1
@@ -310,17 +319,31 @@ spec:
 
                     echo "Waiting for NextCloud to be ready for user_oidc enablement..."
                     counter=0
-                    while [ $counter -lt 60 ]; do
-                      if php /var/www/html/occ status 2>/dev/null | grep -q "installed: true"; then
+                    while [ "${counter}" -lt 60 ]; do
+                      if php /var/www/html/occ status | grep -q "installed: true"; then
                         echo "NextCloud is ready, checking for user_oidc app..."
                         if [ -d "/var/www/html/custom_apps/user_oidc" ]; then
                           echo "Enabling user_oidc app..."
-                          php /var/www/html/occ app:enable user_oidc 2>/dev/null || true
+                          if ! php /var/www/html/occ app:enable user_oidc; then
+                            echo "WARNING: Failed to enable user_oidc app"
+                          fi
                           echo "user_oidc app enablement completed"
+                          
+                          {{- if .Values.auth.oidc.enabled }}
+                          echo "Configuring OIDC provider..."
+                          if ! php /var/www/html/occ user_oidc:provider keycloak \
+                            --clientid="{{ .Values.auth.oidc.clientId }}" \
+                            --clientsecret="{{ .Values.auth.oidc.clientSecret }}" \
+                            --discoveryuri="{{ .Values.auth.oidc.discoveryUri }}"; then
+                            echo "WARNING: Failed to configure OIDC provider"
+                          else
+                            echo "OIDC provider configuration completed"
+                          fi
+                          {{- end }}
                         fi
                         break
                       fi
-                      echo "Waiting for NextCloud... ($counter/60)"
+                      echo "Waiting for NextCloud... (${counter}/60)"
                       sleep 5
                       counter=$((counter + 5))
                     done
